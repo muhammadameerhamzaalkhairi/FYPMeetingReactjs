@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createClient } from '@supabase/supabase-js'
 import './App.css'
 
@@ -72,30 +72,55 @@ function App() {
   const [filter, setFilter] = useState('All')
   const [expanded, setExpanded] = useState(null)
   const [now, setNow] = useState(() => Date.now())
+  const requestId = useRef(0)
 
   const refresh = useCallback(async () => {
     if (!db) return
+    const id = ++requestId.current
     try {
-      setData(await loadData())
+      const next = await loadData()
+      if (id !== requestId.current) return // a newer request superseded this one
+      setData(next)
       setError('')
     } catch (e) {
+      if (id !== requestId.current) return
       setError(e?.message || 'Unable to load meeting data.')
     } finally {
-      setLoading(false)
+      if (id === requestId.current) setLoading(false)
     }
   }, [])
 
   useEffect(() => {
     if (!db) return
-    const t = window.setTimeout(refresh, 0)
-    const poll = window.setInterval(refresh, 15000)
+    let debounce = 0
+    // Batch bursts of events (e.g. resume/end touch both tables) into one fetch.
+    const scheduleRefresh = () => {
+      window.clearTimeout(debounce)
+      debounce = window.setTimeout(refresh, 250)
+    }
+
+    const initial = window.setTimeout(refresh, 0)
+    const poll = window.setInterval(refresh, 15000) // fallback if Realtime is unavailable
     const tick = window.setInterval(() => setNow(Date.now()), 1000)
+
+    // Realtime: INSERT, UPDATE and DELETE on both base tables (views can't be subscribed to).
     const channel = db.channel('public-viewer')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'meetings' }, refresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'meeting_schedule' }, refresh)
-      .subscribe()
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'meetings' }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'meeting_schedule' }, scheduleRefresh)
+      .subscribe((status) => {
+        // Fires on first connect and after every automatic rejoin: re-sync to catch missed events.
+        if (status === 'SUBSCRIBED') scheduleRefresh()
+      })
+
+    const onVisible = () => { if (document.visibilityState === 'visible') scheduleRefresh() }
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('online', scheduleRefresh)
+
     return () => {
-      window.clearTimeout(t); window.clearInterval(poll); window.clearInterval(tick)
+      window.clearTimeout(initial); window.clearTimeout(debounce)
+      window.clearInterval(poll); window.clearInterval(tick)
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('online', scheduleRefresh)
       db.removeChannel(channel)
     }
   }, [refresh])
@@ -201,7 +226,6 @@ function GroupCard({ group, timer, open, onToggle }) {
   return (
     <article className={`card ${running ? 'running' : ''}`}>
       <button className="summary" onClick={onToggle} aria-expanded={open}>
-        <span className="radio">{running && <i />}</span>
         <span className="num">{number}</span>
         <span className="info">
           <b>{head.project || 'Untitled project'}</b>
@@ -211,7 +235,12 @@ function GroupCard({ group, timer, open, onToggle }) {
             {timer && <span className="chip">{timer}</span>}
           </span>
         </span>
-        <span className={`chevron ${open ? 'open' : ''}`} aria-hidden="true">⌄</span>
+        <span className={`chevron ${open ? 'open' : ''}`} aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
+            strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+        </span>
       </button>
       {open && (
         <div className="students">
@@ -226,5 +255,4 @@ function GroupCard({ group, timer, open, onToggle }) {
     </article>
   )
 }
-
 export default App

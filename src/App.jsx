@@ -167,7 +167,10 @@ function App() {
     <div className="stage">
       <main className="phone">
         <div className="page">
-          <p className="date">{fmtDate(meeting?.meeting_date || next?.meeting_date)}</p>
+          <header className="brand-row">
+            <img className="brand-logo" src="/logo.png" alt="Logo" />
+            <p className="date">{fmtDate(meeting?.meeting_date || next?.meeting_date)}</p>
+          </header>
           <div className="title-row">
             <h1 className="title">What’s happening now?</h1>
             {pill ? <span className={`live-pill ${pill[1]}`}><i />{pill[0]}</span>
@@ -180,13 +183,15 @@ function App() {
             <Stat value={meeting ? num(meeting.groups_total) : 0} label="Total" />
           </section>
 
-          <input className="search" type="search" aria-label="Search" placeholder="Search student, reg # or project"
-            value={query} onChange={(e) => setQuery(e.target.value)} />
+          <div className="sticky-bar">
+            <input className="search" type="search" aria-label="Search" placeholder="Search..."
+              value={query} onChange={(e) => setQuery(e.target.value)} />
 
-          <div className="filters" role="group" aria-label="Filter groups">
-            {FILTERS.map((f) => (
-              <button key={f} className={`filter ${filter === f ? 'active' : ''}`} onClick={() => setFilter(f)}>{f}</button>
-            ))}
+            <div className="filters" role="group" aria-label="Filter groups">
+              {FILTERS.map((f) => (
+                <button key={f} className={`filter ${filter === f ? 'active' : ''}`} onClick={() => setFilter(f)}>{f}</button>
+              ))}
+            </div>
           </div>
 
           <section className="list">

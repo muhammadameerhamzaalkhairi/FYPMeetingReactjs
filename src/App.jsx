@@ -9,10 +9,14 @@ const db = url && key
   ? createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } })
   : null
 
-const FILTERS = ['All', 'Running', 'Upcoming', 'Done']
-const RANK = { running: 0, upcoming: 1, done: 2, skipped: 3 }
+const FILTERS = ['All', 'Running', 'Upcoming', 'Paused', 'Done']
+const RANK = { running: 0, paused: 1, upcoming: 2, done: 3, skipped: 4 }
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+const DEFAULT_SLOT_MS = 15 * 60000
+const ADAPTIVE_MIN_SAMPLES = 2   // after this many done groups, the average is used
+const ADAPTIVE_RECENT = 5        // average only the last N done groups
+const ALLOW_EARLY = true         // false = expected time never goes before the scheduled time
 
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0)
 const localToday = () => {
@@ -28,6 +32,10 @@ const fmtTime = (t) => {
   const [h, m] = String(t).split(':').map(Number)
   return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`
 }
+const fmtClock = (ms) => {
+  const d = new Date(ms)
+  return `${d.getHours() % 12 || 12}:${String(d.getMinutes()).padStart(2, '0')} ${d.getHours() >= 12 ? 'PM' : 'AM'}`
+}
 const clock = (s) => {
   const t = Math.max(0, Math.floor(s))
   const p = (n) => String(n).padStart(2, '0')
@@ -38,6 +46,8 @@ const total = (s) => {
   const m = Math.round(s / 60)
   return m < 60 ? `${m}min` : `${Math.floor(m / 60)}h ${m % 60}min`
 }
+// meeting_date 'YYYY-MM-DD' + meeting_time 'HH:MM:SS' -> local ms
+const toMs = (d, t) => new Date(`${d}T${String(t).slice(0, 8)}`).getTime()
 
 async function loadData() {
   // 1) Active meeting (running/paused), same rule as the Flutter Live screen.
@@ -137,6 +147,75 @@ function App() {
     return [...map.values()]
   }, [rows])
 
+  // Expected start time for every upcoming group, recalculated every second.
+  // number -> { expected: ms, delayMin: int }
+  const expectedMap = useMemo(() => {
+    const out = new Map()
+    if (!meeting || (meeting.status !== 'running' && meeting.status !== 'paused')) return out
+    // Use the day the meeting actually started (a meeting can be started on any date),
+    // so scheduled times and "now" are on the same day.
+    const date = meeting.started_at
+      ? (() => {
+          const d = new Date(meeting.started_at)
+          return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+        })()
+      : meeting.meeting_date
+    const ordered = [...groups]
+      .filter((g) => g.head.meeting_time)
+      .sort((a, b) => a.number - b.number)
+    if (!ordered.length) return out
+
+    const sched = ordered.map((g) => toMs(date, g.head.meeting_time))
+
+    // Slot length of group i = gap to the next group's scheduled time.
+    // Last group (or a bad gap) reuses the previous gap, else 15 min.
+    const slotOf = (i) => {
+      if (i + 1 < ordered.length && sched[i + 1] > sched[i]) return sched[i + 1] - sched[i]
+      if (i > 0 && sched[i] > sched[i - 1]) return sched[i] - sched[i - 1]
+      return DEFAULT_SLOT_MS
+    }
+
+    // Average of the most recent finished groups (pauses already excluded by the DB).
+    const doneSecs = ordered
+      .filter((g) => g.head.status === 'done' && num(g.head.duration_sec) > 0)
+      .sort((a, b) => String(a.head.ended_at).localeCompare(String(b.head.ended_at)))
+      .slice(-ADAPTIVE_RECENT)
+      .map((g) => num(g.head.duration_sec))
+    const avgMs = doneSecs.length >= ADAPTIVE_MIN_SAMPLES
+      ? (doneSecs.reduce((a, b) => a + b, 0) / doneSecs.length) * 1000
+      : null
+    const slotFor = (i) => avgMs ?? slotOf(i)
+
+    // While the whole meeting is paused the clock stands still.
+    const clockNow = meeting.status === 'paused' && meeting.paused_at
+      ? new Date(meeting.paused_at).getTime()
+      : now
+
+    // Time still needed by groups that are running/paused: slot minus time already used (never below 0).
+    let cursor = clockNow
+    ordered.forEach((g, i) => {
+      const h = g.head
+      let usedMs = 0
+      if (h.status === 'running' && h.started_at) {
+        usedMs = Math.max(0, clockNow - new Date(h.started_at).getTime() - num(h.paused_seconds) * 1000)
+      } else if (h.status === 'paused') {
+        usedMs = num(h.duration_sec) * 1000
+      } else {
+        return
+      }
+      cursor += Math.max(0, slotFor(i) - usedMs)
+    })
+
+    // Chain the upcoming groups one after another.
+    ordered.forEach((g, i) => {
+      if (g.head.status !== 'upcoming') return
+      const expected = ALLOW_EARLY ? cursor : Math.max(cursor, sched[i])
+      out.set(g.number, { expected, delayMin: Math.round((expected - sched[i]) / 60000) })
+      cursor = expected + slotFor(i)
+    })
+    return out
+  }, [groups, meeting, now])
+
   const visible = useMemo(() => {
     const words = query.toLowerCase().trim().split(/\s+/).filter(Boolean)
     return groups.filter((g) => {
@@ -148,7 +227,7 @@ function App() {
         if (/^\d+$/.test(w)) return w.length <= 3 ? Number(w) === g.number : fields.some((f) => f.includes(w))
         return [`group ${g.number}`, status, ...fields].some((f) => f.includes(w))
       })
-    }).sort((a, b) => (RANK[a.head.status] ?? 4) - (RANK[b.head.status] ?? 4) || a.number - b.number)
+    }).sort((a, b) => (RANK[a.head.status] ?? 5) - (RANK[b.head.status] ?? 5) || a.number - b.number)
   }, [groups, query, filter])
 
   const timerFor = (g) => {
@@ -157,6 +236,8 @@ function App() {
       const end = meeting?.status === 'paused' && meeting.paused_at ? new Date(meeting.paused_at).getTime() : now
       return clock((end - new Date(h.started_at).getTime()) / 1000 - num(h.paused_seconds))
     }
+    // A paused group shows its saved, frozen time.
+    if (h.status === 'paused' && h.duration_sec != null) return clock(num(h.duration_sec))
     if (h.status === 'done' && h.duration_sec != null) return total(num(h.duration_sec))
     return null
   }
@@ -208,6 +289,7 @@ function App() {
               : !visible.length ? <div className="state">No groups match your search or filter.</div>
               : visible.map((g) => (
                 <GroupCard key={g.number} group={g} timer={timerFor(g)}
+                  expected={expectedMap.get(g.number)}
                   open={expanded === g.number}
                   onToggle={() => setExpanded(expanded === g.number ? null : g.number)} />
               ))}
@@ -224,7 +306,7 @@ function Stat({ value, label }) {
   return <div className="stat"><b>{value}</b><span>{label}</span></div>
 }
 
-function GroupCard({ group, timer, open, onToggle }) {
+function GroupCard({ group, timer, expected, open, onToggle }) {
   const { head, students, number } = group
   const status = String(head.status || 'upcoming').toLowerCase()
   const running = status === 'running'
@@ -235,9 +317,14 @@ function GroupCard({ group, timer, open, onToggle }) {
         <span className="info">
           <b>{head.project || 'Untitled project'}</b>
           <span className="chips">
-            <span className="chip">{status[0].toUpperCase() + status.slice(1)}</span>
+            <span className={`chip status-${status}`}>{status[0].toUpperCase() + status.slice(1)}</span>
             <span>{head.supervisor || 'Supervisor not listed'} · {fmtTime(head.meeting_time)}</span>
             {timer && <span className="chip">{timer}</span>}
+            {expected && (
+              <span className="chip eta" title="Expected start time, updates live">
+                 ~{fmtClock(expected.expected)}
+              </span>
+            )}
           </span>
         </span>
         <span className={`chevron ${open ? 'open' : ''}`} aria-hidden="true">

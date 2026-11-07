@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createClient } from '@supabase/supabase-js'
+import NotificationCenter from './NotificationCenter.jsx'
+import { createNotifications } from './notifications.js'
 import './App.css'
 
 const url = import.meta.env.VITE_SUPABASE_URL
@@ -8,6 +10,7 @@ const key = import.meta.env.VITE_SUPABASE_ANON_KEY
 const db = url && key
   ? createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } })
   : null
+const notifications = createNotifications({ db })
 
 const FILTERS = ['All', 'Running', 'Upcoming', 'Paused', 'Done']
 const RANK = { running: 0, paused: 1, upcoming: 2, done: 3, skipped: 4 }
@@ -114,13 +117,17 @@ function App() {
     const tick = window.setInterval(() => setNow(Date.now()), 1000)
 
     // Realtime: INSERT, UPDATE and DELETE on both base tables (views can't be subscribed to).
-    const channel = db.channel('public-viewer')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'meetings' }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'meeting_schedule' }, scheduleRefresh)
-      .subscribe((status) => {
-        // Fires on first connect and after every automatic rejoin: re-sync to catch missed events.
-        if (status === 'SUBSCRIBED') scheduleRefresh()
-      })
+    let channel
+    // Defer setup so StrictMode's first cleanup runs before creating a channel.
+    const connect = window.setTimeout(() => {
+      channel = db.channel('public-viewer')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'meetings' }, scheduleRefresh)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'meeting_schedule' }, scheduleRefresh)
+        .subscribe((status) => {
+          // Fires on first connect and after every automatic rejoin: re-sync to catch missed events.
+          if (status === 'SUBSCRIBED') scheduleRefresh()
+        })
+    }, 0)
 
     const onVisible = () => { if (document.visibilityState === 'visible') scheduleRefresh() }
     document.addEventListener('visibilitychange', onVisible)
@@ -128,10 +135,11 @@ function App() {
 
     return () => {
       window.clearTimeout(initial); window.clearTimeout(debounce)
+      window.clearTimeout(connect)
       window.clearInterval(poll); window.clearInterval(tick)
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('online', scheduleRefresh)
-      db.removeChannel(channel)
+      if (channel) db.removeChannel(channel)
     }
   }, [refresh])
 
@@ -195,7 +203,7 @@ function App() {
     let cursor = clockNow
     ordered.forEach((g, i) => {
       const h = g.head
-      let usedMs = 0
+      let usedMs
       if (h.status === 'running' && h.started_at) {
         usedMs = Math.max(0, clockNow - new Date(h.started_at).getTime() - num(h.paused_seconds) * 1000)
       } else if (h.status === 'paused') {
@@ -250,7 +258,10 @@ function App() {
         <div className="page">
           <header className="brand-row">
             <img className="brand-logo" src="/logo.png" alt="Logo" />
-            <p className="date">{fmtDate(meeting?.meeting_date || next?.meeting_date)}</p>
+            <div className="header-actions">
+              <p className="date">{fmtDate(meeting?.meeting_date || next?.meeting_date)}</p>
+              <NotificationCenter store={notifications} />
+            </div>
           </header>
           <div className="title-row">
             <h1 className="title">What’s happening now?</h1>

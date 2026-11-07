@@ -4,6 +4,8 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "test": "node --test",
+    "test:browser": "node tests/verify-browser.mjs",
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",

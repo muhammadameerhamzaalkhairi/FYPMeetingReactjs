@@ -101,3 +101,20 @@
 
 .date-block { text-align: right; }
 .start-info { margin: 2px 0 0; font-size: 12px; font-weight: 700; color: #111; }
+
+/* Notifications reuse the dashboard's neutral palette and rounded surfaces. */
+.header-actions { display: flex; align-items: center; gap: 8px; }
+.notification-center { position: relative; }
+.notification-bell { position: relative; display: grid; place-items: center; width: 36px; height: 36px; border: 0; border-radius: 50%; background: #fff; color: #111; }
+.notification-count { position: absolute; top: -3px; right: -5px; padding: 2px 4px; min-width: 17px; border-radius: 12px; background: #111; color: #dff35c; font-size: 10px; }
+.notification-panel { position: absolute; right: 0; top: 44px; z-index: 30; width: min(340px, calc(100vw - 36px)); max-height: 65vh; overflow-y: auto; padding: 16px; border-radius: 22px; background: #fff; box-shadow: 0 8px 32px #0003; color: #111; font-size: 13px; }
+.notification-heading, .notification-toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.notification-toggle { margin: 12px 0; }
+.notification-toggle input { width: 18px; height: 18px; accent-color: #111; }
+.notification-link { border: 0; background: transparent; color: #444; padding: 6px 0; text-decoration: underline; font-size: 12px; }
+.notification-note { color: #555; line-height: 1.5; }
+.notification-list { list-style: none; padding: 0; margin: 8px 0 0; }
+.notification-list li { margin-top: 6px; padding: 10px; border-radius: 14px; background: #f3f3ee; overflow-wrap: anywhere; }
+.notification-list li.unread { background: #eff6cf; }
+.notification-list p { margin: 0 0 6px; white-space: pre-wrap; }
+.notification-list time { display: block; color: #555; font-size: 11px; }

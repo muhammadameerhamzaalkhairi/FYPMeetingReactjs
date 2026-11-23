@@ -331,11 +331,12 @@ function GroupCard({ group, timer, expected, open, onToggle }) {
             <span className={`chip status-${status}`}>{status[0].toUpperCase() + status.slice(1)}</span>
             <span>{head.supervisor || 'Supervisor not listed'} · {fmtTime(head.meeting_time)}</span>
             {timer && <span className="chip">{timer}</span>}
+            {/* Expected time chip hidden for now
             {expected && (
               <span className="chip eta" title="Expected start time, updates live">
                  ~{fmtClock(expected.expected)}
               </span>
-            )}
+            )} */}
           </span>
         </span>
         <span className={`chevron ${open ? 'open' : ''}`} aria-hidden="true">
